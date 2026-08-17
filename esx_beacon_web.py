@@ -569,9 +569,62 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps(payload), "application/json; charset=utf-8")
 
 
+# Chromium-family browsers accept --app=<url>, which opens a window with no
+# tabs, no address bar and its own Dock/taskbar entry. Invoked by executable
+# path rather than through `open`/start, because those refuse to pass arguments
+# to an already-running instance.
+CHROMIUM_BY_PLATFORM = {
+    "darwin": [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        "/Applications/Vivaldi.app/Contents/MacOS/Vivaldi",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ],
+    "win32": [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ],
+}
+CHROMIUM_ON_PATH = ["google-chrome", "google-chrome-stable", "chromium",
+                    "chromium-browser", "microsoft-edge", "brave-browser",
+                    "chrome", "msedge"]
+
+
+def find_chromium():
+    for candidate in CHROMIUM_BY_PLATFORM.get(sys.platform, []):
+        if os.path.exists(candidate):
+            return candidate
+    for name in CHROMIUM_ON_PATH:
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def open_ui(url, prefer_window=True):
+    """Show the interface. Returns how it was opened, for the console message."""
+    if prefer_window:
+        exe = find_chromium()
+        if exe:
+            try:
+                subprocess.Popen(
+                    [exe, "--app=" + url, "--window-size=1200,840"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return "app window"
+            except OSError:
+                pass                    # fall through to the normal browser
+    webbrowser.open(url)
+    return "browser tab"
+
+
 def main():
-    args = [a for a in sys.argv[1:] if a != "--no-browser"]
+    flags = {"--no-browser", "--tab"}
+    args = [a for a in sys.argv[1:] if a not in flags]
     quiet = "--no-browser" in sys.argv or os.environ.get("EKAHAU_NO_BROWSER")
+    as_tab = "--tab" in sys.argv
 
     initial = ""
     if args and os.path.exists(args[0]):
@@ -582,10 +635,19 @@ def main():
     url = "http://127.0.0.1:%d/?t=%s%s" % (port, TOKEN, initial)
     print("Ekahau beacon element viewer")
     print("  serving on %s" % url)
-    print("  close the browser tab and press Ctrl-C here, or click Quit in the page.")
     sys.stdout.flush()
+
     if not quiet:
-        threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+        opened = open_ui(url, prefer_window=not as_tab)
+        if opened == "app window":
+            print("  opened in a standalone window")
+        else:
+            print("  opened in a browser tab")
+            if not as_tab:
+                print("  (install Chrome or Edge to get a standalone window)")
+    print("  close this window to stop, or click Quit in the page.")
+    sys.stdout.flush()
+
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
