@@ -29,7 +29,7 @@ APP_NAME = "Ekahau Beacon Viewer"
 # Reverse-DNS identifier. Unsigned builds do not care what this is, but if you
 # publish the repo, point it at a namespace you own —
 # io.github.<your-username>.ekahau-beacon-viewer is the usual convention.
-BUNDLE_ID = "io.github.ekahau-beacon-viewer"
+BUNDLE_ID = "io.github.supertech06.ekahau-beacon-viewer"
 VERSION = "1.0"
 PAYLOAD = ["esx_beacon_web.py", "esx_beacon_ies.py"]
 
