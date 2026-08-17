@@ -1,0 +1,140 @@
+name: Build and release
+
+# Push a tag to cut a release:
+#     git tag v1.0.0 && git push origin v1.0.0
+#
+# Or run this by hand from the Actions tab to get build artifacts without
+# publishing anything.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # needed to create the release
+
+jobs:
+  macos:
+    name: macOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the bundle and the shareable zip
+        run: python3 package_for_sharing.py --dest dist
+
+      - name: Check the bundle actually runs
+        run: |
+          ditto -x -k "dist/Ekahau Beacon Viewer (macOS).zip" unpacked
+          APP="unpacked/Ekahau Beacon Viewer/Ekahau Beacon Viewer.app"
+          test -x "$APP/Contents/MacOS/launcher"
+          "$APP/Contents/MacOS/launcher" --no-browser > server.log 2>&1 &
+          for _ in $(seq 1 20); do grep -q "serving on" server.log && break; sleep 0.5; done
+          URL=$(sed -n 's/.*serving on \(http[^ ]*\).*/\1/p' server.log)
+          test -n "$URL" || { echo "server never started"; cat server.log; exit 1; }
+          curl -fsS -o /dev/null "$URL"
+          echo "macOS bundle starts and serves"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/Ekahau Beacon Viewer (macOS).zip
+          if-no-files-found: error
+
+  windows:
+    name: Windows executable
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: pip install --disable-pip-version-check pyinstaller
+
+      # Console mode on purpose: closing the window stops the server, which is
+      # the only obvious way to quit a tool whose UI lives in a browser tab.
+      - name: Freeze to a standalone exe
+        run: >
+          pyinstaller --onefile --console
+          --name "Ekahau Beacon Viewer"
+          --hidden-import esx_beacon_ies
+          esx_beacon_web.py
+
+      - name: Check the exe actually runs
+        shell: pwsh
+        run: |
+          $exe = "dist/Ekahau Beacon Viewer.exe"
+          $p = Start-Process $exe -ArgumentList "--no-browser" -PassThru `
+               -RedirectStandardOutput server.log -RedirectStandardError server.err
+          $url = $null
+          foreach ($i in 1..30) {
+            Start-Sleep -Milliseconds 500
+            if (Test-Path server.log) {
+              $m = Select-String -Path server.log -Pattern 'serving on (http\S+)'
+              if ($m) { $url = $m.Matches[0].Groups[1].Value; break }
+            }
+          }
+          if (-not $url) { Get-Content server.log, server.err -EA SilentlyContinue; throw "server never started" }
+          Invoke-WebRequest -Uri $url -UseBasicParsing | Out-Null
+          Stop-Process -Id $p.Id -Force
+          Write-Host "Windows exe starts and serves"
+
+      - name: Assemble the download
+        shell: pwsh
+        run: |
+          $stage = "staging/Ekahau Beacon Viewer"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item "dist/Ekahau Beacon Viewer.exe" $stage
+          Copy-Item "packaging/windows-exe-readme.txt" "$stage/READ ME.txt"
+          Compress-Archive -Path $stage -DestinationPath "Ekahau Beacon Viewer (Windows).zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: Ekahau Beacon Viewer (Windows).zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [macos, windows]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Write the release notes
+        run: |
+          cat > notes.md <<'NOTES'
+          Download the build for your platform below.
+
+          **macOS** — unzip and drag the app to Applications. It is not signed,
+          so on first launch macOS will say it cannot verify the app: open
+          System Settings › Privacy & Security and click **Open Anyway**. You
+          only do this once.
+
+          **Windows** — unzip and double-click the executable. Python is bundled,
+          so there is nothing to install. SmartScreen may warn about an
+          unrecognised app; choose *More info* then *Run anyway*.
+
+          Both start a local server on 127.0.0.1 and open your browser. Nothing
+          is uploaded and nothing leaves your machine.
+          NOTES
+
+      # gh ships on the runner, so this needs no third-party actions
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          find artifacts -type f -name '*.zip' -print
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file notes.md \
+            artifacts/macos/*.zip \
+            artifacts/windows/*.zip

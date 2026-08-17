@@ -36,13 +36,33 @@ CACHE_LOCK = threading.Lock()
 
 
 def load_decoder():
-    path = os.path.join(HERE, "esx_beacon_ies.py")
-    if not os.path.exists(path):
-        raise ImportError("esx_beacon_ies.py must sit next to this file (looked in %s)" % HERE)
-    spec = importlib.util.spec_from_file_location("esx_beacon_ies", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    """Return the esx_beacon_ies module, however this program is being run.
+
+    A plain import covers both loose scripts (the script's own directory is
+    first on sys.path) and frozen builds, where PyInstaller bundles the module
+    rather than shipping a .py file to sit beside us. The path lookup is the
+    fallback for the case where neither applies — running from a symlink, say,
+    or importing this file from somewhere else.
+    """
+    try:
+        import esx_beacon_ies
+        return esx_beacon_ies
+    except ImportError:
+        pass
+
+    search = [HERE]
+    bundled = getattr(sys, "_MEIPASS", None)        # PyInstaller extraction dir
+    if bundled:
+        search.insert(0, bundled)
+    for folder in search:
+        path = os.path.join(folder, "esx_beacon_ies.py")
+        if os.path.exists(path):
+            spec = importlib.util.spec_from_file_location("esx_beacon_ies", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    raise ImportError("esx_beacon_ies.py must sit next to this file (looked in %s)"
+                      % ", ".join(search))
 
 
 DEC = load_decoder()

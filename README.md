@@ -85,9 +85,34 @@ Windows side, remove those prompts.
 
 ### Windows and Python
 
-The Windows zip needs Python 3 installed, since Windows does not ship it. A
-GitHub Actions job on a `windows-latest` runner could produce a genuine
-standalone `.exe` with PyInstaller — that cannot be cross-compiled from macOS.
+The zip produced locally by `package_for_sharing.py` ships the scripts and needs
+Python 3 installed, since Windows does not provide it. The zip attached to a
+**release** is different: CI freezes it with PyInstaller into a standalone
+`.exe` with Python bundled, so there is nothing to install. Both are named
+`Ekahau Beacon Viewer (Windows).zip`; the release build is the one to hand to
+people. A Windows executable cannot be cross-compiled from macOS, which is why
+it only exists via CI.
+
+## Cutting a release
+
+`.github/workflows/release.yml` builds both platforms and publishes them to the
+repository's Releases page:
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+That builds the macOS bundle on a `macos-latest` runner and the Windows
+executable on `windows-latest`, smoke-tests each by starting the server and
+fetching a page, then attaches both zips to a release named after the tag.
+
+Running the workflow by hand from the **Actions** tab builds and smoke-tests
+both without publishing anything, which is the way to check a change before
+tagging it.
+
+The workflow uses only first-party actions plus the `gh` CLI that ships on the
+runners, so there are no third-party dependencies to allow-list.
 
 ## Requirements
 
