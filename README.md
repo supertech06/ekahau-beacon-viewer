@@ -35,16 +35,11 @@ An active survey will not reveal it either.
 
 ```sh
 python3 esx_beacon_web.py [optional/path/to/survey.esx]
-python3 esx_beacon_web.py --tab      # force a normal browser tab
 ```
 
-Opens in a standalone window with no tabs or address bar, so it behaves like an
-ordinary desktop app. That relies on a Chromium-family browser — Chrome, Edge,
-Brave or Vivaldi — being installed; without one it falls back to a normal
-browser tab, which works identically.
-
-Filter by SSID, BSSID prefix or band; tick column groups on and off; click any
-column to sort; click an access point for its full element list.
+Starts a local server and opens your browser. Filter by SSID, BSSID prefix or
+band; tick column groups on and off; click any column to sort; click an access
+point for its full element list.
 
 Nothing is uploaded. The server binds to `127.0.0.1` only, reads the `.esx`
 straight off disk, and each launch mints a random URL token so nothing else on
