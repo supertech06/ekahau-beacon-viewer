@@ -25,15 +25,16 @@ app. Choose "More info" then "Run anyway".
 
 Privacy
 -------
-Nothing is uploaded. The server binds to 127.0.0.1 only, reads the .esx from
-your disk, and each launch uses a random URL token so nothing else on your
-machine can reach it.
+Nothing is uploaded. The server binds to 127.0.0.1 only and reads the .esx from
+your disk. Each launch picks a random port and a URL token so another browser
+tab cannot guess the address. The token is printed in the terminal; it is not a
+barrier against other processes running as you.
 
 
 A note on transmit power
 ------------------------
-The "Regulatory max" column shows the ceiling an AP advertises in its Country
-element - commonly 36 dBm in the US. That is the legal limit every AP in the
-country advertises, not what the radio is set to. Only the TPC Report column
-is a real reading, and many enterprise vendors do not send one. If that column
-is empty for your APs, get transmit power from the WLAN controller instead.
+The "Regulatory max" column shows the Country-element ceiling for this AP's
+channel — commonly 36 dBm in the US. That is a legal limit, not what the radio
+is set to. Only the TPC Report column is a real reading, and many enterprise
+vendors do not send one. If that column is empty for your APs, get transmit
+power from the WLAN controller instead.
