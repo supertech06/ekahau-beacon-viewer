@@ -38,8 +38,11 @@ LAUNCHER = """#!/bin/sh
 RES="$(cd "$(dirname "$0")/../Resources" && pwd)"
 # Deliberately not cd'ing into Resources: when the bundle lives in OneDrive,
 # macOS blocks Python from scanning that directory for imports if it is also
-# the working directory.
+# the working directory. Remember the launch directory so a relative path typed
+# in the UI still resolves.
+START_DIR="$(pwd)"
 cd / || exit 1
+export EKAHAU_START_DIR="$START_DIR"
 exec /usr/bin/python3 "$RES/esx_beacon_web.py" "$@"
 """
 

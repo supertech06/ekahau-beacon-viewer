@@ -68,15 +68,24 @@ def load_decoder():
 DEC = load_decoder()
 
 
+def survey_path(path):
+    return DEC.resolve_esx_path(path)
+
+
+def _capture_rank(s):
+    return (1 if s["tpc"] is not None else 0, s["ie_count"])
+
+
 def decode_survey(path):
     """Parse every beacon in a survey. Cached per path+mtime."""
+    path = survey_path(path)
     key = (path, os.path.getmtime(path))
     with CACHE_LOCK:
         if key in CACHE:
             return CACHE[key]
 
     measurements = DEC.load(path)
-    rows, raw, counts, radios = [], {}, collections.Counter(), set()
+    captured, counts, radios = [], collections.Counter(), set()
     for m in measurements:
         blob = m.get("informationElements")
         if not blob:
@@ -90,7 +99,12 @@ def decode_survey(path):
         s["id"] = "%s|%s" % (s["bssid"], s["freq"])
         counts.update({e for e, _ in ies})
         radios.add(s["bssid"])
-        rows.append(s)
+        captured.append((s, m, body, ies))
+
+    captured.sort(key=lambda item: _capture_rank(item[0]), reverse=True)
+    rows = [s for s, _m, _b, _ies in captured]
+    raw = {}
+    for s, m, body, ies in captured:
         raw.setdefault(s["id"], (m, body, ies))
 
     total = len(rows)
@@ -100,13 +114,13 @@ def decode_survey(path):
         for eid, n in counts.most_common()
     ]
     real, placeholder = {}, {}
-    for s in rows:
+    for _rid, (m, _b, ies) in raw.items():
+        s = DEC.summarise(m, ies)
         if s["tpc"] is not None:
-            real.setdefault(s["bssid"], {"power": s["tpc"], "ssid": s["ssid"]})
-    for m, _b, ies in raw.values():
-        for eid, v in ies:
-            if eid == 35 and v and DEC.signed(v[0]) == 63:
-                placeholder.setdefault(m["mac"], m.get("ssid", ""))
+            real[s["bssid"]] = {"power": s["tpc"], "ssid": s["ssid"]}
+        elif any(eid == 35 and v and DEC.signed(v[0]) == 63 for eid, v in ies):
+            placeholder[s["bssid"]] = s["ssid"]
+    placeholder = {k: v for k, v in placeholder.items() if k not in real}
 
     payload = {
         "rows": rows,
@@ -304,6 +318,7 @@ let DATA = null, view = [], sortKey = null, sortDesc = false, selected = null;
 const $ = id => document.getElementById(id);
 const on = g => document.querySelector('[data-g="'+g+'"]').checked;
 const cols = () => COLS.filter(c => !c[2] || on(c[2]));
+const escAttr = s => String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
 
 function fmt(k, v){
   if (v === null || v === undefined || v === '' || (Array.isArray(v) && !v.length))
@@ -324,7 +339,7 @@ function applyFilters(){
   const seen = new Set(); view = [];
   for (const r of DATA.rows){
     if (ss && !(r.ssid||'').toLowerCase().includes(ss)) continue;
-    if (bs && !(r.bssid||'').startsWith(bs)) continue;
+    if (bs && !(r.bssid||'').toLowerCase().startsWith(bs)) continue;
     if (bd !== 'All bands' && r.band !== bd) continue;
     if (uq){ if (seen.has(r.id)) continue; seen.add(r.id); }
     view.push(r);
@@ -354,7 +369,7 @@ function render(){
     '<th class="'+(c[3]?'num':'')+'" data-k="'+c[0]+'">'+c[1]+
     (sortKey===c[0] ? '<span class="ar">'+(sortDesc?'▾':'▴')+'</span>' : '')+'</th>').join('');
   $('body').innerHTML = view.map(r =>
-    '<tr data-id="'+r.id+'"'+(r.id===selected?' class="sel"':'')+'>'+
+    '<tr data-id="'+escAttr(r.id)+'"'+(r.id===selected?' class="sel"':'')+'>'+
     cs.map(c => '<td class="'+(c[3]?'num':'')+'">'+fmt(c[0], r[c[0]])+'</td>').join('')+
     '</tr>').join('');
   $('empty').style.display = view.length ? 'none' : 'block';
@@ -381,8 +396,12 @@ async function analyse(){
   sortKey = null; selected = null;
   applyFilters();
   buildSummary();
-  $('status').innerHTML = '<b>'+DATA.file+'</b> — '+DATA.total.toLocaleString()+
-    ' beacon captures from '+DATA.radios.toLocaleString()+' radios';
+  const st = $('status');
+  st.textContent = '';
+  const b = document.createElement('b');
+  b.textContent = DATA.file;
+  st.append(b, document.createTextNode(' — '+DATA.total.toLocaleString()+
+    ' beacon captures from '+DATA.radios.toLocaleString()+' radios'));
 }
 
 function buildSummary(){
@@ -403,7 +422,7 @@ function buildSummary(){
   } else {
     L.push('No radio in this survey reports a usable transmit power.');
     L.push('Actual TX power is not recoverable from these beacons — the');
-    L.push('"Regulatory max" column is the legal ceiling every AP advertises,');
+    L.push('"Regulatory max" column is the legal ceiling for this channel,');
     L.push('not a configured level. Get real values from the WLAN controller.');
   }
   if (DATA.placeholders.length){
@@ -503,7 +522,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parts.path == "/api/raw":
-            path = q.get("path", [""])[0]
+            path = survey_path(q.get("path", [""])[0])
             rid = q.get("id", [""])[0]
             if not os.path.exists(path):
                 self._send(400, "file not found")
@@ -557,7 +576,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._send(400, "bad request")
             return
-        path = (req.get("path") or "").strip()
+        path = survey_path(req.get("path") or "")
         if not path or not os.path.exists(path):
             self._send(400, "No file at: %s" % path)
             return
@@ -574,8 +593,10 @@ def main():
     quiet = "--no-browser" in sys.argv or os.environ.get("EKAHAU_NO_BROWSER")
 
     initial = ""
-    if args and os.path.exists(args[0]):
-        initial = "&open=" + urllib.parse.quote(os.path.abspath(args[0]))
+    if args:
+        opened = survey_path(args[0])
+        if os.path.exists(opened):
+            initial = "&open=" + urllib.parse.quote(opened)
 
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     port = httpd.server_address[1]

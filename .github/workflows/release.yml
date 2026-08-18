@@ -15,8 +15,20 @@ permissions:
   contents: write        # needed to create the release
 
 jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run unit tests
+        run: python3 -m unittest discover -v
+
   macos:
     name: macOS app
+    needs: [test]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +56,7 @@ jobs:
 
   windows:
     name: Windows executable
+    needs: [test]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

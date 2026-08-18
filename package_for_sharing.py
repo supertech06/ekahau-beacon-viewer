@@ -111,9 +111,10 @@ bypasses Gatekeeper entirely:
 
 Privacy
 -------
-Nothing is uploaded. The server binds to 127.0.0.1 only, reads the .esx from
-your disk, and each launch uses a random URL token so nothing else on your
-machine can reach it.
+Nothing is uploaded. The server binds to 127.0.0.1 only and reads the .esx from
+your disk. Each launch picks a random port and a URL token so another browser
+tab cannot guess the address. The token is printed in the terminal; it is not a
+barrier against other processes running as you.
 """
 
 WIN_README = """Ekahau Beacon Viewer - Windows
@@ -147,14 +148,15 @@ SmartScreen
 -----------
 Windows may warn about a downloaded .cmd file. Choose "More info" then
 "Run anyway". You can read the file in Notepad first if you would rather
-check it - it is nine lines that locate Python and start the script.
+check it — it locates Python 3 and starts the viewer.
 
 
 Privacy
 -------
-Nothing is uploaded. The server binds to 127.0.0.1 only, reads the .esx from
-your disk, and each launch uses a random URL token so nothing else on your
-machine can reach it.
+Nothing is uploaded. The server binds to 127.0.0.1 only and reads the .esx from
+your disk. Each launch picks a random port and a URL token so another browser
+tab cannot guess the address. The token is printed in the terminal; it is not a
+barrier against other processes running as you.
 """
 
 

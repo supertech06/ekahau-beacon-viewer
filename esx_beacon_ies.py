@@ -20,6 +20,7 @@ import argparse
 import base64
 import collections
 import json
+import os
 import sys
 import zipfile
 
@@ -44,8 +45,34 @@ KNOWN_OUI = {
 }
 
 
+TPE_UNSPECIFIED = 127
+COUNTRY_POWER_UNSPECIFIED = 255
+OPERATING_TRIPLET_MIN = 201
+HE_OPERATION_EXT = 36
+TPE_INTERP = {
+    0: "local EIRP",
+    1: "local EIRP PSD",
+    2: "regulatory client EIRP",
+    3: "regulatory client EIRP PSD",
+}
+
+
 def signed(byte: int) -> int:
     return byte - 256 if byte > 127 else byte
+
+
+def matches_bssid(mac, prefix) -> bool:
+    return (mac or "").lower().startswith((prefix or "").lower())
+
+
+def resolve_esx_path(path: str, start_dir=None) -> str:
+    path = os.path.expanduser((path or "").strip())
+    if not path:
+        return path
+    if not os.path.isabs(path):
+        root = start_dir or os.environ.get("EKAHAU_START_DIR") or os.getcwd()
+        path = os.path.join(root, path)
+    return os.path.abspath(path)
 
 
 def parse_ies(body: bytes):
@@ -60,17 +87,102 @@ def parse_ies(body: bytes):
     return out
 
 
+def _country_fields(v: bytes):
+    if not v or len(v) < 3:
+        return None, [], []
+    country = v[:2].decode("ascii", "replace").strip()
+    operating, subbands = [], []
+    for i in range(3, len(v) - 2, 3):
+        first, count, third = v[i], v[i + 1], v[i + 2]
+        if first >= OPERATING_TRIPLET_MIN:
+            operating.append((first, count, third))
+        else:
+            power = None if third == COUNTRY_POWER_UNSPECIFIED else third
+            subbands.append((first, count, power))
+    return country, operating, subbands
+
+
+def _country_max_for_channel(v: bytes, channel):
+    _country, _operating, subbands = _country_fields(v)
+    if channel is None:
+        return None
+    matched = [
+        power for first, n, power in subbands
+        if power is not None and first <= channel <= first + n - 1
+    ]
+    return max(matched) if matched else None
+
+
+def _tpe_parse(v: bytes):
+    if not v:
+        return None
+    info = v[0]
+    count = info & 0x07
+    interp = (info >> 3) & 0x07
+    raw = list(v[1:1 + count + 1])
+    widths = ["20 MHz", "40 MHz", "80 MHz", "160 MHz", "80+80/320 MHz"]
+    values = []
+    for i, octet in enumerate(raw):
+        if octet == TPE_UNSPECIFIED:
+            continue
+        label = widths[i] if i < len(widths) else "field %d" % i
+        values.append((label, signed(octet) / 2))
+    return {
+        "interp": interp,
+        "is_psd": interp in (1, 3),
+        "label": TPE_INTERP.get(interp, "interpretation %d" % interp),
+        "values": values,
+    }
+
+
+def _tpe_eirp_max(payloads):
+    best = None
+    for v in payloads:
+        parsed = _tpe_parse(v)
+        if not parsed or parsed["is_psd"] or not parsed["values"]:
+            continue
+        n = max(x[1] for x in parsed["values"])
+        if best is None or n > best:
+            best = n
+    return best
+
+
+def _he_6ghz_primary(payloads):
+    for v in payloads:
+        if not v or v[0] != HE_OPERATION_EXT or len(v) < 8:
+            continue
+        params = v[1:4]
+        if not ((params[2] >> 1) & 1):
+            continue
+        i = 7
+        if params[0] & 0x80:
+            i += 3
+        if params[1] & 0x01:
+            i += 1
+        if i < len(v):
+            return v[i]
+    return None
+
+
 def describe(eid: int, v: bytes) -> str:
     if eid == 0:
-        return repr(v.decode("utf-8", "replace")) or "<hidden>"
+        ssid = v.decode("utf-8", "replace")
+        return repr(ssid) if ssid else "<hidden>"
     if eid == 3 and v:
         return f"channel {v[0]}"
-    if eid == 7 and len(v) >= 6:
-        triplets = [
-            f"ch {v[i]}-{v[i] + v[i + 1] - 1} max {v[i + 2]} dBm"
-            for i in range(3, len(v) - 2, 3)
+    if eid == 7 and len(v) >= 3:
+        country, operating, subbands = _country_fields(v)
+        parts = [
+            f"operating class {oclass} coverage {coverage}"
+            for _ext, oclass, coverage in operating
         ]
-        return f'{v[:2].decode("ascii", "replace")} | ' + "; ".join(triplets)
+        for first, n, power in subbands:
+            last = first + n - 1
+            if power is None:
+                parts.append(f"ch {first}-{last} max unspecified")
+            else:
+                parts.append(f"ch {first}-{last} max {power} dBm")
+        return f"{country} | " + "; ".join(parts) if parts else country
     if eid == 32 and v:
         return f"{v[0]} dB local power constraint"
     if eid == 35 and len(v) >= 2:
@@ -78,12 +190,17 @@ def describe(eid: int, v: bytes) -> str:
     if eid == 11 and len(v) >= 5:
         stations = int.from_bytes(v[0:2], "little")
         return f"{stations} associated stations, {round(v[2] / 255 * 100)}% channel utilisation"
-    if eid == 195 and len(v) >= 2:
-        widths = ["20 MHz", "40 MHz", "80 MHz", "160 MHz"]
-        return ", ".join(
-            f"{widths[i]} max EIRP {signed(x) / 2:g} dBm"
-            for i, x in enumerate(v[1:5]) if i < len(widths)
-        )
+    if eid == 195:
+        parsed = _tpe_parse(v)
+        if parsed:
+            unit = "dBm/MHz" if parsed["is_psd"] else "dBm"
+            kind = "PSD" if parsed["is_psd"] else "EIRP"
+            if not parsed["values"]:
+                return f"{parsed['label']}: unspecified"
+            body = ", ".join(
+                f"{label} max {kind} {val:g} {unit}" for label, val in parsed["values"]
+            )
+            return f"{parsed['label']}: {body}"
     if eid == 221 and len(v) >= 3:
         oui = v[:3].hex(":")
         return f"OUI {oui} ({KNOWN_OUI.get(oui, 'unknown vendor')})"
@@ -112,6 +229,8 @@ def channel_of(freq):
         return (freq - 2407) // 5
     if freq < 5925:
         return (freq - 5000) // 5
+    if freq == 5935:
+        return 2
     return (freq - 5950) // 5
 
 
@@ -132,6 +251,18 @@ def summarise(m, ies):
     freqs = m.get("channelByCenterFrequencyDefinedNarrowChannels") or []
     freq = freqs[0] if freqs else None
 
+    ds = first(3)
+    ht = first(61)
+    he_primary = _he_6ghz_primary(by.get(255, []))
+    if ds:
+        channel = ds[0]
+    elif ht:
+        channel = ht[0]
+    elif he_primary is not None:
+        channel = he_primary
+    else:
+        channel = channel_of(freq)
+
     tpc = None
     v = first(35)
     if v:
@@ -141,18 +272,11 @@ def summarise(m, ies):
 
     country = country_max = None
     v = first(7)
-    if v and len(v) >= 6:
-        country = v[:2].decode("ascii", "replace").strip()
-        maxes = [v[i + 2] for i in range(3, len(v) - 2, 3)]
-        if maxes:
-            country_max = max(maxes)
+    if v and len(v) >= 3:
+        country, _operating, _subbands = _country_fields(v)
+        country_max = _country_max_for_channel(v, channel)
 
-    vht_max = None
-    v = first(195)
-    if v and len(v) >= 2:
-        vals = [signed(x) / 2 for x in v[1:5]]
-        if vals:
-            vht_max = max(vals)
+    vht_max = _tpe_eirp_max(by.get(195, []))
 
     stations = utilisation = None
     v = first(11)
@@ -166,7 +290,7 @@ def summarise(m, ies):
         "bssid": m.get("mac", ""),
         "freq": freq,
         "band": band_of(freq),
-        "channel": channel_of(freq),
+        "channel": channel,
         "security": m.get("security") or "",
         "technologies": "/".join(m.get("technologies") or []),
         "tpc": tpc,
@@ -185,6 +309,7 @@ def summarise(m, ies):
 
 
 def load(path: str):
+    path = resolve_esx_path(path)
     with zipfile.ZipFile(path) as z:
         data = json.loads(z.read("accessPointMeasurements.json"))
     return data["accessPointMeasurements"]
@@ -214,7 +339,7 @@ def main() -> int:
 
     try:
         measurements = load(args.esx)
-    except (OSError, zipfile.BadZipFile, KeyError) as exc:
+    except (OSError, zipfile.BadZipFile, KeyError, ValueError, TypeError) as exc:
         print(f"could not read {args.esx}: {exc}", file=sys.stderr)
         return 1
 
@@ -246,6 +371,7 @@ def main() -> int:
                 print(f"    {p:>4} dBm   {mac}   {ssid!r}")
         else:
             print("  no usable readings — no radio here reports a real transmit power")
+        placeholder = {mac: v for mac, v in placeholder.items() if mac not in real}
         if placeholder:
             print(f"\n  ignored, reporting the 63 dBm 'not specified' placeholder "
                   f"({len(placeholder)} radios):")
@@ -257,7 +383,7 @@ def main() -> int:
     if args.ssid:
         selected = [d for d in selected if args.ssid.lower() in d[0]["ssid"].lower()]
     if args.bssid:
-        selected = [d for d in selected if d[0]["mac"].startswith(args.bssid.lower())]
+        selected = [d for d in selected if matches_bssid(d[0].get("mac", ""), args.bssid)]
     if args.ie is not None:
         selected = [d for d in selected if any(e == args.ie for e, _ in d[2])]
 

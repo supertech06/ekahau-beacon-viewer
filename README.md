@@ -17,13 +17,16 @@ everything else untouched. This reads the rest:
 
 ## A caution about transmit power
 
-The Country element and the VHT Transmit Power Envelope both advertise a maximum
-power — commonly 36 dBm in the US. That is the **regulatory ceiling every AP in
-the country advertises**, not what the radio is configured to. Only the TPC
-Report element (ID 35) states real transmit power, and many enterprise vendors
-do not send it. Some consumer gear fills it with `63` (`0x3f`) as a "not
-specified" placeholder; the tool separates those out rather than reporting them
-as readings.
+The Country element and the Transmit Power Envelope both advertise a maximum
+power — commonly 36 dBm in the US. That is a **regulatory ceiling**, not what
+the radio is configured to. Country maxima are taken from the subband that
+covers this AP's channel, not the highest figure anywhere in the country list.
+Operating-class triplets (common on 6 GHz) do not carry a dBm value and are
+not shown as one. Unspecified TPE slots (octet 127) and PSD encodings are not
+reported as EIRP. Only the TPC Report element (ID 35) states real transmit
+power, and many enterprise vendors do not send it. Some consumer gear fills it
+with `63` (`0x3f`) as a "not specified" placeholder; the tool separates those
+out rather than reporting them as readings.
 
 If no AP in your survey reports a usable TPC Report, actual transmit power is
 not recoverable from a passive capture and you need it from the WLAN controller.
@@ -41,10 +44,12 @@ Starts a local server and opens your browser. Filter by SSID, BSSID prefix or
 band; tick column groups on and off; click any column to sort; click an access
 point for its full element list.
 
-Nothing is uploaded. The server binds to `127.0.0.1` only, reads the `.esx`
-straight off disk, and each launch mints a random URL token so nothing else on
-the machine can reach it. **Browse…** calls the native file dialog — AppleScript
-on macOS, PowerShell on Windows, zenity or kdialog on Linux.
+Nothing is uploaded. The server binds to `127.0.0.1` only and reads the `.esx`
+straight off disk. Each launch picks a random port and a URL token so another
+browser tab cannot guess the address. The token is printed in the terminal; it
+is not a barrier against other processes running as you. **Browse…** calls the
+native file dialog — AppleScript on macOS, PowerShell on Windows, zenity or
+kdialog on Linux.
 
 ### Command line
 
@@ -104,8 +109,9 @@ git push origin v1.0.0
 ```
 
 That builds the macOS bundle on a `macos-latest` runner and the Windows
-executable on `windows-latest`, smoke-tests each by starting the server and
-fetching a page, then attaches both zips to a release named after the tag.
+executable on `windows-latest`, runs the decoder unit tests, smoke-tests each
+by starting the server and fetching a page, then attaches both zips to a
+release named after the tag.
 
 Running the workflow by hand from the **Actions** tab builds and smoke-tests
 both without publishing anything, which is the way to check a change before
@@ -128,6 +134,7 @@ Tcl/Tk 8.5, and that renders blank windows on current macOS.
 | --- | --- |
 | `esx_beacon_ies.py` | the decoder, and a CLI over it — all parsing lives here |
 | `esx_beacon_web.py` | browser front end |
+| `test_esx_beacon_ies.py` / `test_esx_beacon_web.py` | unit tests (`python3 -m unittest`) |
 | `build_macos_app.py` | assembles the `.app`, including a dependency-free icon |
 | `package_for_sharing.py` | produces the distributable zips |
 
