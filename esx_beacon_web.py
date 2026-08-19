@@ -247,11 +247,38 @@ tbody tr{cursor:pointer}
 tbody tr:hover{background:#eef5fd}
 tbody tr.sel{background:#dcebfb}
 .dim{color:#bbb}
-pre{margin:0;padding:16px 20px;font:12px/1.5 "SF Mono",Menlo,monospace;
-  white-space:pre;overflow:auto;max-height:calc(100vh - 330px)}
 .note{padding:14px 20px;color:var(--dim)}
 .warn{color:var(--warn)} .ok{color:var(--ok)}
 .empty{padding:44px 20px;text-align:center;color:var(--dim)}
+
+/* header strip above a table: a few labelled facts, not a table itself */
+.meta{display:flex;flex-wrap:wrap;gap:22px;padding:13px 20px;
+  border-bottom:1px solid var(--line);background:#fcfcfd}
+.meta .kv{display:flex;flex-direction:column;gap:1px;min-width:0}
+.meta .k{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
+.meta .v{font-weight:600}
+.meta .v.mono{font-family:"SF Mono",Menlo,monospace;font-weight:500}
+
+.sect{padding:14px 20px 8px;font-weight:600;border-top:1px solid var(--line)}
+.sect .n{font-weight:400;color:var(--dim);margin-left:6px}
+
+/* proportion bar behind the share figure in the element table */
+.bar{position:relative;min-width:120px}
+.bar i{position:absolute;left:0;top:50%;transform:translateY(-50%);height:13px;
+  background:#dbe9fb;border-radius:2px}
+.bar span{position:relative;padding-left:6px}
+
+.b64{margin:0 20px 18px;padding:11px 13px;border:1px solid var(--line);border-radius:6px;
+  background:#fafafa;font:11px/1.55 "SF Mono",Menlo,monospace;color:#444;
+  word-break:break-all;max-height:132px;overflow:auto;user-select:all}
+.rowsub{color:var(--dim)}
+td.wrap{white-space:normal}
+
+/* these tables are for reading, not sorting or selecting */
+table.static th{cursor:default}
+table.static th:hover{background:#fafafa}
+table.static tbody tr{cursor:default}
+table.static tbody tr:hover{background:#fafbfc}
 </style></head><body>
 
 <header>
@@ -299,8 +326,23 @@ pre{margin:0;padding:16px 20px;font:12px/1.5 "SF Mono",Menlo,monospace;
   <div class="tab on" id="t_aps"><div class="scroll"><table>
     <thead><tr id="head"></tr></thead><tbody id="body"></tbody></table>
     <div class="empty" id="empty">No survey loaded yet.</div></div></div>
-  <div class="tab" id="t_sum"><pre id="sum">Analyse a survey to see which information elements it contains.</pre></div>
-  <div class="tab" id="t_raw"><pre id="raw">Click any access point to see its full decoded element list.</pre></div>
+  <div class="tab" id="t_sum">
+    <div class="empty" id="sum_empty">Analyse a survey to see which information elements it contains.</div>
+    <div id="sum_body" hidden>
+      <div class="meta" id="sum_meta"></div>
+      <div class="scroll" id="sum_elements"></div>
+      <div id="sum_power"></div>
+    </div>
+  </div>
+  <div class="tab" id="t_raw">
+    <div class="empty" id="raw_empty">Click any access point to see its full decoded element list.</div>
+    <div id="raw_body" hidden>
+      <div class="meta" id="raw_meta"></div>
+      <div class="scroll" id="raw_elements"></div>
+      <div class="sect">As stored by Ekahau</div>
+      <div class="b64" id="raw_b64"></div>
+    </div>
+  </div>
 </main>
 
 <script>
@@ -404,42 +446,147 @@ async function analyse(){
     ' beacon captures from '+DATA.radios.toLocaleString()+' radios'));
 }
 
+// Everything below builds DOM nodes and sets textContent rather than assembling
+// HTML strings, so decoded beacon text can never be parsed as markup.
+function el(tag, cls, text){
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined && text !== null) n.textContent = text;
+  return n;
+}
+
+function fillMeta(node, pairs){
+  node.replaceChildren();
+  for (const [k, v, mono] of pairs){
+    if (v === null || v === undefined || v === '') continue;
+    const kv = el('div','kv');
+    kv.append(el('div','k',k), el('div','v'+(mono ? ' mono' : ''), v));
+    node.append(kv);
+  }
+}
+
+function staticTable(headers, rows){
+  const t = el('table','static');
+  const tr = el('tr');
+  for (const h of headers) tr.append(el('th', h.num ? 'num' : '', h.label));
+  const thead = el('thead');
+  thead.append(tr);
+  t.append(thead);
+  const tb = el('tbody');
+  for (const r of rows){
+    const row = el('tr');
+    r.forEach((cell, i) => {
+      const td = el('td', [headers[i].num && 'num', headers[i].wrap && 'wrap']
+                          .filter(Boolean).join(' '));
+      if (cell instanceof Node) td.append(cell); else td.textContent = cell;
+      row.append(td);
+    });
+    tb.append(row);
+  }
+  t.append(tb);
+  return t;
+}
+
+function sect(title, count){
+  const s = el('div','sect', title);
+  if (count !== undefined) s.append(el('span','n', count));
+  return s;
+}
+
+function scrolled(node){
+  const d = el('div','scroll');
+  d.append(node);
+  return d;
+}
+
+function shareBar(share){
+  const bar = el('div','bar');
+  const fill = el('i');
+  fill.style.width = Math.max(0, Math.min(100, share)) + '%';
+  bar.append(fill, el('span', share.toFixed(1) + '%'));
+  return bar;
+}
+
 function buildSummary(){
-  const L = [];
-  L.push('ID     ELEMENT                          CAPTURES   SHARE');
-  L.push('-'.repeat(60));
-  for (const e of DATA.summary)
-    L.push(String(e.id).padEnd(7)+e.name.padEnd(33)+String(e.count).padStart(8)+
-           (e.share.toFixed(1)+'%').padStart(8));
-  L.push(''); L.push('-'.repeat(60));
-  L.push(DATA.total.toLocaleString()+' beacon captures from '+DATA.radios+' distinct radios');
-  L.push('');
+  fillMeta($('sum_meta'), [
+    ['Survey', DATA.file],
+    ['Beacon captures', DATA.total.toLocaleString()],
+    ['Distinct radios', DATA.radios.toLocaleString()],
+    ['Element types', String(DATA.summary.length)],
+  ]);
+
+  $('sum_elements').replaceChildren(staticTable(
+    [{label:'ID', num:true}, {label:'Element'}, {label:'Captures', num:true}, {label:'Share'}],
+    DATA.summary.map(e => [
+      String(e.id),
+      e.name,
+      e.count.toLocaleString(),
+      shareBar(e.share),
+    ])));
+
+  const power = document.createDocumentFragment();
   if (DATA.txpower.length){
-    L.push('Radios reporting a usable transmit power (element 35): '+DATA.txpower.length);
-    L.push('');
-    for (const t of DATA.txpower)
-      L.push('   '+String(t.power).padStart(4)+' dBm   '+t.bssid+'   '+(t.ssid||"''"));
+    power.append(sect('Radios reporting a usable transmit power', DATA.txpower.length));
+    power.append(scrolled(staticTable(
+      [{label:'TX power', num:true}, {label:'BSSID'}, {label:'SSID'}],
+      DATA.txpower.map(t => [t.power + ' dBm', t.bssid, t.ssid || '—']))));
   } else {
-    L.push('No radio in this survey reports a usable transmit power.');
-    L.push('Actual TX power is not recoverable from these beacons — the');
-    L.push('"Regulatory max" column is the legal ceiling for this channel,');
-    L.push('not a configured level. Get real values from the WLAN controller.');
+    power.append(sect('Transmit power'));
+    power.append(el('div','note',
+      'No radio in this survey reports a usable transmit power. It is not '
+      + 'recoverable from these beacons — the Regulatory max column is the legal '
+      + 'ceiling for the channel, not a configured level. Get real values from '
+      + 'the WLAN controller.'));
   }
   if (DATA.placeholders.length){
-    L.push(''); L.push('Ignored — reporting the 63 dBm "not specified" placeholder ('+
-      DATA.placeholders.length+' radios):'); L.push('');
-    for (const p of DATA.placeholders) L.push('            '+p.bssid+'   '+(p.ssid||"''"));
+    power.append(sect('Ignored: reporting the 63 dBm placeholder', DATA.placeholders.length));
+    power.append(scrolled(staticTable(
+      [{label:'BSSID'}, {label:'SSID'}],
+      DATA.placeholders.map(p => [p.bssid, p.ssid || '—']))));
   }
-  $('sum').textContent = L.join('\n');
+  $('sum_power').replaceChildren(power);
+
+  $('sum_empty').hidden = true;
+  $('sum_body').hidden = false;
 }
 
 async function showRaw(id){
   selected = id; render();
   document.querySelector('[data-t="t_raw"]').click();
-  $('raw').textContent = 'Loading…';
-  const r = await fetch('/api/raw?t='+TOKEN+'&path='+encodeURIComponent($('path').value.trim())+
-                        '&id='+encodeURIComponent(id));
-  $('raw').textContent = r.ok ? await r.text() : 'Could not load: '+(await r.text());
+  $('raw_body').hidden = true;
+  $('raw_empty').hidden = false;
+  $('raw_empty').textContent = 'Loading…';
+
+  let r;
+  try {
+    r = await fetch('/api/raw?t='+TOKEN+'&path='+encodeURIComponent($('path').value.trim())+
+                    '&id='+encodeURIComponent(id));
+  } catch(e){ $('raw_empty').textContent = 'Server unreachable.'; return; }
+  if (!r.ok){ $('raw_empty').textContent = 'Could not load: '+(await r.text()); return; }
+  const d = await r.json();
+
+  fillMeta($('raw_meta'), [
+    ['SSID', d.ssid || '(hidden)'],
+    ['BSSID', d.bssid, true],
+    ['Channels', (d.channels || []).join(', '), true],
+    ['Security', d.security],
+    ['Beacon body', d.bytes + ' bytes'],
+    ['Elements', String(d.count)],
+  ]);
+
+  $('raw_elements').replaceChildren(staticTable(
+    [{label:'ID', num:true}, {label:'Element'}, {label:'Len', num:true},
+     {label:'Value', wrap:true}],
+    d.elements.map(e => [
+      String(e.id),
+      e.known ? e.name : el('span','rowsub', e.name),
+      String(e.len),
+      e.value,
+    ])));
+
+  $('raw_b64').textContent = d.base64;
+  $('raw_empty').hidden = true;
+  $('raw_body').hidden = false;
 }
 
 $('browse').onclick = async () => {
@@ -537,20 +684,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, "no such access point in this survey")
                 return
             m, body, ies = entry
-            out = [
-                "%s   %s" % (m.get("ssid") or "<hidden>", m.get("mac")),
-                "channel(s) %s   %s" % (m.get("channelByCenterFrequencyDefinedNarrowChannels"),
-                                        m.get("security")),
-                "%d bytes of beacon body, %d information elements" % (len(body), len(ies)),
-                "-" * 92,
-            ]
-            for eid, v in ies:
-                out.append("IE %3d  %-28s len %3d   %s"
-                           % (eid, DEC.IE_NAMES.get(eid, "(unrecognised)"),
-                              len(v), DEC.describe(eid, v)))
-            out += ["", "-" * 92, "As stored by Ekahau (base64):", "",
-                    m.get("informationElements", "")]
-            self._send(200, "\n".join(out))
+            payload = {
+                "ssid": m.get("ssid") or "",
+                "bssid": m.get("mac") or "",
+                "channels": m.get("channelByCenterFrequencyDefinedNarrowChannels") or [],
+                "security": m.get("security") or "",
+                "bytes": len(body),
+                "count": len(ies),
+                "elements": [
+                    {"id": eid,
+                     "name": DEC.IE_NAMES.get(eid, "(unrecognised)"),
+                     "known": eid in DEC.IE_NAMES,
+                     "len": len(v),
+                     "value": DEC.describe(eid, v)}
+                    for eid, v in ies
+                ],
+                "base64": m.get("informationElements", ""),
+            }
+            self._send(200, json.dumps(payload), "application/json; charset=utf-8")
             return
 
         if parts.path == "/api/quit":
